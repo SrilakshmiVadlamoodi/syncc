@@ -1,4 +1,4 @@
-# Mini Compiler 
+# AI-Assisted Syntax Error Detection and Correction Compiler
 
 A small compiler pipeline in C for a C-like mini language: lexing → parsing
 (AST) → semantic analysis → three-address code generation → constant-folding
