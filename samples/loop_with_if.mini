@@ -1,0 +1,16 @@
+int i;
+int x;
+int y;
+
+i = 0;
+x = 10;
+y = 0;
+
+while (i < 6) {
+  if (i > 3) {
+    y = y + x;
+  } else {
+    y = y - x;
+  }
+  i = i + 1;
+}

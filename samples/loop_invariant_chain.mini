@@ -1,0 +1,20 @@
+int i;
+int a;
+int b;
+int c;
+int p;
+int q;
+int sum;
+
+a = 2;
+b = 3;
+c = 4;
+i = 0;
+sum = 0;
+
+while (i < 8) {
+  p = a * b;
+  q = p + c;
+  sum = sum + q;
+  i = i + 1;
+}

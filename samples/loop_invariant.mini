@@ -1,0 +1,16 @@
+int i;
+int a;
+int b;
+int t;
+int result;
+
+a = 5;
+b = 3;
+i = 0;
+result = 0;
+
+while (i < 10) {
+  t = a * b;
+  result = result + t;
+  i = i + 1;
+}

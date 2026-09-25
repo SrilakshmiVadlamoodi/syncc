@@ -83,10 +83,15 @@ int main(int argc, char **argv) {
     printf("\n=== TAC (unoptimized) ===\n");
     tac_print(tac, stdout);
 
-    /* --- Stage 5: Optimization (constant folding) --- */
+    /* --- Stage 5: Optimization (constant folding, then loop-invariant
+     * code motion over the folded TAC) --- */
     TACList *tac_opt = optimize_constant_folding(tac);
-    printf("\n=== TAC (optimized) ===\n");
+    printf("\n=== TAC (optimized: constant folding) ===\n");
     tac_print(tac_opt, stdout);
+
+    TACList *tac_licm = optimize_loop_invariant_code_motion(tac_opt);
+    printf("\n=== TAC (optimized: + loop-invariant code motion) ===\n");
+    tac_print(tac_licm, stdout);
 
     /* --- Stage 6: Errors + suggestions --- */
     if (parse_errors->count > 0 || semantic_errors->count > 0) {
@@ -113,6 +118,7 @@ int main(int argc, char **argv) {
     }
 
     /* --- Cleanup --- */
+    taclist_free(tac_licm);
     taclist_free(tac_opt);
     taclist_free(tac);
     symtab_free(symtab);

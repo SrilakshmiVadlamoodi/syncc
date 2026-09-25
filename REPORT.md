@@ -20,7 +20,7 @@ source file.
 | 2. Syntax analysis | `parser.c/h` | Module 2 — Syntax Analysis | Recursive-descent parser, one function per grammar rule (`statement`, `var_decl`, `assign`, `if_stmt`, `while_stmt`, `block`, and a precedence chain `comparison → additive → multiplicative → primary` for expressions). Builds an AST as a tagged union (`NodeType` + `union`). Implements **panic-mode error recovery**: on an unexpected token, the error is recorded and the parser skips forward to the next `;` or `}` rather than aborting, so multiple syntax errors can be collected in a single run. |
 | 3. Semantic analysis | `semantic.c/h` | Module 3 — Semantic Analysis | Builds a symbol table (name → type, declared line) while walking the AST. Checks: redeclaration, use-before-declaration, and type mismatch (narrowing a `float` expression into an `int` variable is flagged; `int → float` widening is allowed, matching ordinary C promotion). Errors are collected in a list rather than raised, consistent with the parser's non-aborting design. |
 | 4. Intermediate code generation | `codegen.c/h` | Module 4 — Intermediate Code Generation | Walks the (semantically checked) AST and emits three-address code: `result = arg1 op arg2` for expressions, fresh `t<N>` temporaries per sub-expression, and `L<N>` labels with `goto`/`ifFalse ... goto` for `if`/`while` control flow — the standard TAC lowering pattern. |
-| 5. Optimization | `optimizer.c/h` | Module 5 — Optimization | Constant folding over the TAC: any `TAC_BINOP` whose both operands are literal text is evaluated at compile time and rewritten to a plain assignment (e.g. `t1 = 2 + 3` → `t1 = 5`), covering both arithmetic and comparison operators. The driver prints unoptimized and optimized TAC side by side. |
+| 5. Optimization | `optimizer.c/h` | Module 5 — Optimization | Two passes, applied in sequence. **Constant folding**: any `TAC_BINOP` whose both operands are literal text is evaluated at compile time and rewritten to a plain assignment (e.g. `t1 = 2 + 3` → `t1 = 5`), covering both arithmetic and comparison operators. **Loop-invariant code motion (LICM)**: `while` loops are located by their back-edge (a `TAC_GOTO` jumping to an earlier `TAC_LABEL`); for a loop whose body is a single straight-line block, any assignment whose operands are all loop-invariant and whose target is assigned exactly once in the body is hoisted into a preheader placed just before the loop. The driver prints unoptimized TAC, TAC after folding, and TAC after folding + LICM, all three side by side. |
 | 6. Error suggestion engine | `error_engine.c/h` | Cross-cutting / AI hook | A static rule table keyed on `(expected_token, found_token)` maps common mistakes (missing semicolon, unclosed parenthesis, reserved word used as an identifier, etc.) to a human-readable suggestion, with a generic `"Syntax error near line X"` fallback when nothing matches. An optional LLM (Claude Haiku) fallback hook exists in the same interface but is currently a stub — see §4. |
 | 7. Driver / CLI | `main.c`, `Makefile` | — | Reads a `.mini` file, runs all six stages in order, prints tokens / AST / symbol table / TAC (before and after optimization) / errors with suggestions, and frees every heap allocation before exit. |
 
@@ -58,15 +58,21 @@ from a syllabus-module mapping alone:
   the spec's structured-error intent without C++-style exceptions.
   Parsing never aborts on a bad token; it recovers and keeps collecting
   errors (see §2, syntax analysis).
-- **Optimization scope reduced to constant folding only.** The original
-  spec also asked for dead code elimination. That was dropped to keep
-  the project weekend-sized given the extra boilerplate C requires
-  relative to Python (manual TAC list management, explicit string
-  ownership per instruction, no garbage collector). Constant folding
-  alone is sufficient to demonstrate Module 5 or the optimization
-  syllabus module; the `dead` variable in `constant_folding.mini` is a
-  known, intentional gap — it is assigned but never used, and is *not*
-  removed by this build.
+- **Optimization scope reduced to constant folding + loop-invariant code
+  motion; dead code elimination is still out.** The original spec also
+  asked for dead code elimination. That was dropped to keep the project
+  weekend-sized given the extra boilerplate C requires relative to
+  Python (manual TAC list management, explicit string ownership per
+  instruction, no garbage collector); the `dead` variable in
+  `constant_folding.mini` is a known, intentional gap — it is assigned
+  but never used, and is *not* removed by this build. LICM was added on
+  top of folding since it's the other optimization most directly tied to
+  `while` loops (Module 5 + Module 4's control-flow lowering together),
+  and — unlike full dead-code elimination — it stays tractable without a
+  real CFG/dominator pass by restricting itself to straight-line loop
+  bodies (`samples/loop_with_if.mini` shows the restriction: a loop body
+  with an `if` inside it is left untouched rather than risk hoisting a
+  conditionally-executed assignment incorrectly).
 - **Memory cleanup**: `main.c` runs an explicit teardown pass at the end
   of `main()` (`taclist_free`, `symtab_free`, `ast_free`,
   `tokenlist_free`, etc.) for every structure it allocated, since this
