@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "tacutil.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -216,21 +217,6 @@ TACList *generate_tac(AstNode *program) {
 
 /* ================= TAC print ================= */
 
-static const char *binop_symbol(TokenType op) {
-    switch (op) {
-        case TOK_PLUS:  return "+";
-        case TOK_MINUS: return "-";
-        case TOK_STAR:  return "*";
-        case TOK_SLASH: return "/";
-        case TOK_EQ:    return "==";
-        case TOK_LT:    return "<";
-        case TOK_GT:    return ">";
-        case TOK_LE:    return "<=";
-        case TOK_GE:    return ">=";
-        default:        return "?";
-    }
-}
-
 void tac_print(TACList *list, FILE *out) {
     for (size_t i = 0; i < list->count; i++) {
         TACInstr *instr = &list->items[i];
@@ -240,7 +226,7 @@ void tac_print(TACList *list, FILE *out) {
                 break;
             case TAC_BINOP:
                 fprintf(out, "%s = %s %s %s\n", instr->result, instr->arg1,
-                        binop_symbol(instr->binop), instr->arg2);
+                        tac_binop_symbol(instr->binop), instr->arg2);
                 break;
             case TAC_LABEL:
                 fprintf(out, "%s:\n", instr->result);

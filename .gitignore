@@ -2,3 +2,7 @@
 minicc
 minicc.exe
 .superpowers/
+*.d
+*.bin
+.minicc_cache
+tests_tmp.out
