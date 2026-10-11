@@ -5,6 +5,7 @@
 #include "interp.h"
 #include "optimizer.h"
 #include "tacutil.h"
+#include "timing.h"
 
 static char *licm_text(const char *in_text) {
     TACList *in = tac_from_text(in_text);
@@ -25,6 +26,36 @@ static void expect(const char *in, const char *want) {
 #define LOOP_HEAD "i = 0\nL1:\nt1 = i < 3\nifFalse t1 goto L2\n"
 #define LOOP_TAIL "t9 = i + 1\ni = t9\ngoto L1\nL2:\n"
 
+
+/* Behaviour is unchanged on a large input and it completes quickly. A body
+ * of 15000 independent invariant temps must all be hoisted, in order, in
+ * well under a second (the quadratic implementation took many seconds). */
+static void test_large_loop(void) {
+    enum { NTEMPS = 15000 };
+    char *text = malloc((size_t)NTEMPS * 64 + 256);
+    size_t len = 0;
+    len += (size_t)sprintf(text + len, "i = 0\nL1:\nt1 = i < 3\nifFalse t1 goto L2\n");
+    for (int k = 0; k < NTEMPS; k++)
+        len += (size_t)sprintf(text + len, "t%d = a * b\nx%d = t%d\n", 100 + k, k, 100 + k);
+    len += (size_t)sprintf(text + len, "t9 = i + 1\ni = t9\ngoto L1\nL2:\n");
+
+    TACList *in = tac_from_text(text);
+    double t0 = now_seconds();
+    TACList *out = optimize_loop_invariant_code_motion(in);
+    double elapsed = now_seconds() - t0;
+
+    CHECK(out->count == in->count);
+    /* `i = 0`, then the NTEMPS hoisted temps, then the label */
+    CHECK(out->items[1].op == TAC_BINOP);
+    CHECK(strcmp(out->items[1].result, "t100") == 0);
+    CHECK(strcmp(out->items[NTEMPS].result, "t15099") == 0);
+    CHECK(out->items[NTEMPS + 1].op == TAC_LABEL);
+    if (elapsed >= 1.0) printf("  LICM on %d temps took %.2fs\n", NTEMPS, elapsed);
+    CHECK(elapsed < 1.0);
+    taclist_free(in);
+    taclist_free(out);
+    free(text);
+}
 int main(void) {
     /* a user variable assigned in the body is never hoisted (zero-trip safety) */
     expect(LOOP_HEAD "x = a * b\n" LOOP_TAIL,
@@ -68,5 +99,6 @@ int main(void) {
         taclist_free(out);
     }
 
+    test_large_loop();
     TEST_END();
 }

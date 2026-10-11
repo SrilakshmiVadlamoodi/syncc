@@ -1,4 +1,5 @@
 #include "optimizer.h"
+#include "strmap.h"
 #include "tacutil.h"
 
 #include <stdlib.h>
@@ -153,52 +154,56 @@ static int body_has_control_flow(TACList *input, size_t start, size_t end) {
     return 0;
 }
 
-/* Counts how many times `name` is written (as a TAC_ASSIGN/TAC_BINOP
- * result) within input[start, end). A count of 1 is what makes a name
- * safe to hoist: exactly one definition, so moving it can't disagree
- * with some other assignment left behind in the loop. */
-static int name_assign_count(TACList *input, size_t start, size_t end, const char *name) {
-    int count = 0;
-    for (size_t i = start; i < end; i++) {
-        TACInstr *in = &input->items[i];
-        if ((in->op == TAC_ASSIGN || in->op == TAC_BINOP) && in->result && strcmp(in->result, name) == 0)
-            count++;
-    }
-    return count;
-}
-
+/* Loops are discovered in order of their back-edges and processed in that
+ * order; with straight-line bodies only (no nesting), headers ascend, which
+ * pass 2 relies on. */
 TACList *optimize_loop_invariant_code_motion(TACList *input) {
     TACList *output = taclist_create();
     if (input->count == 0) return output;
 
     char *hoisted = calloc(input->count, sizeof(char));
-
     LoopInfo *loops = malloc(sizeof(LoopInfo) * (input->count + 1));
     size_t loop_count = 0;
 
-    /* Pass 1: find every loop (a backward TAC_GOTO identifies the back
-     * edge -- this codegen never emits a backward jump for anything
-     * else), and for each straight-line body, mark which instructions
-     * are safe to hoist into a preheader. */
+    /* label name -> index of its TAC_LABEL */
+    StrMap *labels = strmap_create();
+    size_t *label_pos = malloc(sizeof(size_t) * (input->count + 1));
+    for (size_t i = 0; i < input->count; i++) {
+        if (input->items[i].op != TAC_LABEL) continue;
+        int before = (int)strmap_count(labels);
+        int id = strmap_intern(labels, input->items[i].result);
+        if (id == before) label_pos[id] = i;
+    }
+
+    /* Pass 1: find every loop (a backward TAC_GOTO is the back edge) and,
+     * for each straight-line body, mark which instructions are safe to
+     * hoist into a preheader. */
     for (size_t i = 0; i < input->count; i++) {
         if (input->items[i].op != TAC_GOTO) continue;
 
-        size_t header = input->count;
-        for (size_t j = 0; j < i; j++) {
-            if (input->items[j].op == TAC_LABEL && strcmp(input->items[j].result, input->items[i].result) == 0) {
-                header = j;
-                break;
-            }
-        }
-        if (header == input->count) continue; /* forward goto (if/else), not a loop */
+        int label_id = strmap_find(labels, input->items[i].result);
+        if (label_id < 0 || label_pos[label_id] >= i) continue; /* forward goto (if/else) */
+        size_t header = label_pos[label_id];
 
         size_t if_false = find_if_false_after(input, header + 1);
-        if (if_false >= i) continue; /* malformed for this codegen; be safe and skip */
+        if (if_false >= i) continue;
 
         size_t body_start = if_false + 1;
         size_t body_end = i;
-
         if (body_has_control_flow(input, body_start, body_end)) continue;
+
+        /* One pass over the body: how many times is each name written? */
+        StrMap *defs = strmap_create();
+        int *def_count = calloc(body_end - body_start + 1, sizeof(int));
+        for (size_t k = body_start; k < body_end; k++) {
+            TACInstr *bi = &input->items[k];
+            if (bi->op != TAC_ASSIGN && bi->op != TAC_BINOP) continue;
+            int before = (int)strmap_count(defs);
+            int id = strmap_intern(defs, bi->result);
+            if (id == before) def_count[id] = 0;
+            def_count[id]++;
+        }
+        StrMap *hoisted_defs = strmap_create();
 
         for (size_t k = body_start; k < body_end; k++) {
             TACInstr *bi = &input->items[k];
@@ -210,33 +215,32 @@ TACList *optimize_loop_invariant_code_motion(TACList *input) {
             /* A hoisted division could trap on a loop that never executes. */
             if (bi->op == TAC_BINOP && bi->binop == TOK_SLASH &&
                 !(tac_is_numeric_literal(bi->arg2) && atof(bi->arg2) != 0.0)) continue;
-            if (name_assign_count(input, body_start, body_end, bi->result) != 1) continue;
+            int rid = strmap_find(defs, bi->result);
+            if (rid < 0 || def_count[rid] != 1) continue;
 
             int invariant = 1;
             const char *operands[2] = { bi->arg1, bi->arg2 };
             for (int oi = 0; oi < 2 && invariant; oi++) {
                 const char *val = operands[oi];
                 if (!val || tac_is_numeric_literal(val)) continue;
-                if (name_assign_count(input, body_start, body_end, val) == 0) continue; /* defined outside the loop */
-
-                int found_hoisted = 0;
-                for (size_t p = body_start; p < k; p++) {
-                    if (hoisted[p] && input->items[p].result && strcmp(input->items[p].result, val) == 0) {
-                        found_hoisted = 1;
-                        break;
-                    }
-                }
-                if (!found_hoisted) invariant = 0;
+                if (strmap_find(defs, val) < 0) continue;              /* defined outside the loop */
+                if (strmap_find(hoisted_defs, val) < 0) invariant = 0; /* defined here, not hoisted */
             }
-            if (invariant) hoisted[k] = 1;
+            if (invariant) {
+                hoisted[k] = 1;
+                strmap_intern(hoisted_defs, bi->result);
+            }
         }
+
+        strmap_free(hoisted_defs);
+        free(def_count);
+        strmap_free(defs);
 
         loops[loop_count++] = (LoopInfo){ .header = header, .body_start = body_start, .body_end = body_end };
     }
 
     /* Pass 2: emit, inserting each loop's hoisted instructions as a
-     * preheader right before its header label and dropping them from
-     * their original spot in the body. */
+     * preheader right before its header label. */
     size_t next_loop = 0;
     for (size_t i = 0; i < input->count; i++) {
         if (next_loop < loop_count && i == loops[next_loop].header) {
@@ -249,6 +253,8 @@ TACList *optimize_loop_invariant_code_motion(TACList *input) {
         taclist_push(output, tac_copy_instr(&input->items[i]));
     }
 
+    strmap_free(labels);
+    free(label_pos);
     free(loops);
     free(hoisted);
     return output;
