@@ -10,6 +10,7 @@
 #include "error_engine.h"
 #include "cost.h"
 #include "explain.h"
+#include "heuristic.h"
 #include "interp.h"
 #include "passes.h"
 #include "pipeline.h"
@@ -118,7 +119,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* TASK11-ANCHOR: --loo mode */
+    if (opt.loo) {
+        int n = heuristic_leave_one_out(opt.loo_files, opt.loo_count,
+                                        CACHE_DEFAULT_MAX_DISTANCE, stdout);
+        free(opt.loo_files);
+        return n > 0 ? 0 : 1;
+    }
     /* TASK12-ANCHOR: --fuzz / --gen modes */
 
     if (!opt.path) {
@@ -210,7 +216,50 @@ int main(int argc, char **argv) {
         tac_print(chosen, stdout);
     }
 
-    /* TASK11-ANCHOR-B: --learn / --use-cache */
+    if (!collision && opt.learn && have_sr) {
+        HeuristicCache *cache = cache_load(opt.cache_path);
+        Features ft = heuristic_features(tac);
+        double ratio = sr.baseline_cost > 0 ? (double)sr.best_cost / (double)sr.baseline_cost : 1.0;
+        cache_learn(cache, &ft, sr.sequence, sr.sequence_len, ratio);
+        if (cache_save(cache, opt.cache_path))
+            printf("\ncache: learned entry saved to %s (%zu entries)\n", opt.cache_path, cache->count);
+        else
+            fprintf(stderr, "warning: could not write cache file %s\n", opt.cache_path);
+        cache_free(cache);
+    }
+
+    TACList *cached_result = NULL;
+    if (!collision && opt.use_cache && !have_sr) {
+        HeuristicCache *cache = cache_load(opt.cache_path);
+        Features ft = heuristic_features(tac);
+        int dist = 0;
+        const CacheEntry *e = cache_lookup(cache, &ft, CACHE_DEFAULT_MAX_DISTANCE, &dist);
+        if (e) {
+            cached_result = apply_sequence(tac, e->seq, e->len);
+            long cached_cost = interp_dynamic_cost(cached_result, NULL);
+            long fixed_cost = interp_dynamic_cost(tac_licm, NULL);
+            if (cached_cost < 0 || (fixed_cost >= 0 && cached_cost > fixed_cost)) {
+                /* never worse than the baseline */
+                taclist_free(cached_result);
+                cached_result = NULL;
+                printf("\ncache: hit (distance %d) did not beat the fixed pipeline, using it\n", dist);
+                cache_free(cache);
+                goto cache_done;
+            }
+            chosen = cached_result;
+            chosen_label = "cached";
+            printf("\n=== TAC (cache %s, distance %d: ", dist == 0 ? "exact" : "nearest", dist);
+            if (e->len == 0) printf("(none)");
+            for (int i = 0; i < e->len; i++)
+                printf("%s%s", i ? ", " : "", PASS_REGISTRY[e->seq[i]].name);
+            printf(") ===\n");
+            tac_print(chosen, stdout);
+        } else {
+            printf("\ncache: miss, using the fixed pipeline\n");
+        }
+        cache_free(cache);
+    }
+cache_done:;
     if (!collision && opt.explain) {
         printf("\n=== Explain (%s) ===\n", chosen_label);
         if (have_sr) {
@@ -274,6 +323,7 @@ int main(int argc, char **argv) {
 
     /* --- Cleanup --- */
     if (have_sr) search_result_free(&sr);
+    taclist_free(cached_result);
     taclist_free(tac_licm);
     taclist_free(tac_opt);
     taclist_free(tac);
