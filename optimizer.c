@@ -203,6 +203,13 @@ TACList *optimize_loop_invariant_code_motion(TACList *input) {
         for (size_t k = body_start; k < body_end; k++) {
             TACInstr *bi = &input->items[k];
             if (bi->op != TAC_ASSIGN && bi->op != TAC_BINOP) continue;
+            /* Only compiler temps are hoisted: a user variable may be read
+             * before its assignment in the body, or be observed after a loop
+             * that never runs. */
+            if (!tac_is_temp_name(bi->result)) continue;
+            /* A hoisted division could trap on a loop that never executes. */
+            if (bi->op == TAC_BINOP && bi->binop == TOK_SLASH &&
+                !(tac_is_numeric_literal(bi->arg2) && atof(bi->arg2) != 0.0)) continue;
             if (name_assign_count(input, body_start, body_end, bi->result) != 1) continue;
 
             int invariant = 1;

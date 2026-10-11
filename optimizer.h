@@ -20,9 +20,11 @@ TACList *optimize_constant_folding(TACList *input);
  * codegen emits a backward jump). For each loop whose body is a single
  * straight-line block (no nested TAC_LABEL/TAC_GOTO/TAC_IF_FALSE_GOTO --
  * i.e. no nested if/while), hoists any TAC_ASSIGN/TAC_BINOP instruction
- * whose operands are all loop-invariant and whose result is assigned
- * exactly once in the body, into a preheader placed just before the
- * loop's label.
+ * whose operands are all loop-invariant, whose result is a compiler temp
+ * (t<N>) assigned exactly once in the body, and which is not a division
+ * by a non-literal or zero divisor, into a preheader placed just before
+ * the loop's label. User-variable assignments are never hoisted: the
+ * loop may run zero times, or read the variable before assigning it.
  *
  * Loops with nested control flow in the body are left completely
  * unchanged -- deciding whether a conditionally-executed assignment is
