@@ -6,3 +6,4 @@ minicc.exe
 *.bin
 .minicc_cache
 tests_tmp.out
+tests_tmp_cli.out

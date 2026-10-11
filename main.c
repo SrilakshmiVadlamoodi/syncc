@@ -8,21 +8,69 @@
 #include "codegen.h"
 #include "optimizer.h"
 #include "error_engine.h"
+#include "cost.h"
+#include "interp.h"
+#include "passes.h"
+#include "pipeline.h"
+#include "search.h"
+#include "tacutil.h"
+#include "timing.h"
+
+typedef struct {
+    const char *path;
+    int search, use_cache, learn, explain, stats, timing;
+    int budget;
+    const char *cache_path;
+    int fuzz_n, gen_n, loo;
+    unsigned seed;
+    const char **loo_files;
+    int loo_count;
+} Options;
+
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "usage: %s [options] <source.mini>\n"
+        "       %s --fuzz N [--seed S]\n"
+        "       %s --gen N [--seed S]\n"
+        "       %s --loo <a.mini> <b.mini> ...\n"
+        "options: --search --budget N --learn --use-cache --cache PATH\n"
+        "         --explain --stats --time\n",
+        prog, prog, prog, prog);
+}
+
+static int parse_args(int argc, char **argv, Options *o) {
+    memset(o, 0, sizeof *o);
+    o->seed = 1;
+    o->cache_path = ".minicc_cache";
+    o->loo_files = malloc(sizeof(char *) * (size_t)(argc + 1));
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if (!strcmp(a, "--search")) o->search = 1;
+        else if (!strcmp(a, "--learn")) o->learn = 1;
+        else if (!strcmp(a, "--use-cache")) o->use_cache = 1;
+        else if (!strcmp(a, "--explain")) o->explain = 1;
+        else if (!strcmp(a, "--stats")) o->stats = 1;
+        else if (!strcmp(a, "--time")) o->timing = 1;
+        else if (!strcmp(a, "--loo")) o->loo = 1;
+        else if (!strcmp(a, "--budget") && i + 1 < argc) o->budget = atoi(argv[++i]);
+        else if (!strcmp(a, "--cache") && i + 1 < argc) o->cache_path = argv[++i];
+        else if (!strcmp(a, "--seed") && i + 1 < argc) o->seed = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--fuzz") && i + 1 < argc) o->fuzz_n = atoi(argv[++i]);
+        else if (!strcmp(a, "--gen") && i + 1 < argc) o->gen_n = atoi(argv[++i]);
+        else if (a[0] == '-' && a[1] == '-') { fprintf(stderr, "error: unknown option %s\n", a); return 0; }
+        else if (o->loo) o->loo_files[o->loo_count++] = a;
+        else if (!o->path) o->path = a;
+        else return 0;
+    }
+    return 1;
+}
 
 static char *read_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
+    char *buf = pipeline_read_file(path);
+    if (!buf) {
         fprintf(stderr, "error: could not open %s\n", path);
         exit(1);
     }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    char *buf = malloc((size_t)size + 1);
-    fread(buf, 1, (size_t)size, f);
-    buf[size] = '\0';
-    fclose(f);
     return buf;
 }
 
@@ -46,16 +94,43 @@ static char *extract_line(const char *source, int line) {
     return out;
 }
 
+static void stat_row(const char *label, TACList *list) {
+    long dyn = interp_dynamic_cost(list, NULL);
+    printf("STAT %s %ld %ld\n", label, dyn, cost_static_ops(list));
+}
+
+static void verify_row(const char *label, TACList *ref, TACList *cand, const SymbolTable *symtab) {
+    InterpResult a = interp_run(ref, NULL, INTERP_DEFAULT_STEP_LIMIT);
+    InterpResult b = interp_run(cand, NULL, INTERP_DEFAULT_STEP_LIMIT);
+    if (a.status != INTERP_OK)
+        printf("VERIFY %s skipped (original does not run to completion)\n", label);
+    else
+        printf("VERIFY %s %s\n", label, interp_equivalent(&a, &b, symtab) ? "ok" : "MISMATCH");
+    interp_result_free(&a);
+    interp_result_free(&b);
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <source.mini>\n", argv[0]);
+    Options opt;
+    if (!parse_args(argc, argv, &opt)) {
+        usage(argv[0]);
         return 1;
     }
 
-    char *source = read_file(argv[1]);
+    /* TASK11-ANCHOR: --loo mode */
+    /* TASK12-ANCHOR: --fuzz / --gen modes */
+
+    if (!opt.path) {
+        usage(argv[0]);
+        return 1;
+    }
+
+    char *source = read_file(opt.path);
 
     /* --- Stage 1: Lexing --- */
+    double t0 = now_seconds();
     TokenList *tokens = lex(source);
+    double t_lex = now_seconds() - t0;
     printf("=== Tokens ===\n");
     for (size_t i = 0; i < tokens->count; i++) {
         Token *t = &tokens->items[i];
@@ -66,32 +141,92 @@ int main(int argc, char **argv) {
     /* --- Stage 2: Parsing --- */
     codegen_reset_counters();
     ParseErrorList *parse_errors = parse_error_list_create();
+    t0 = now_seconds();
     AstNode *ast = parse_program(tokens, parse_errors);
+    double t_parse = now_seconds() - t0;
 
     printf("\n=== AST ===\n");
     ast_print(ast, 0);
 
     /* --- Stage 3: Semantic analysis --- */
     SemanticErrorList *semantic_errors = semantic_error_list_create();
+    t0 = now_seconds();
     SymbolTable *symtab = analyze(ast, semantic_errors);
+    double t_sem = now_seconds() - t0;
 
     printf("\n=== Symbol Table ===\n");
     symtab_print(symtab, stdout);
 
     /* --- Stage 4: TAC generation --- */
+    t0 = now_seconds();
     TACList *tac = generate_tac(ast);
+    double t_codegen = now_seconds() - t0;
     printf("\n=== TAC (unoptimized) ===\n");
     tac_print(tac, stdout);
 
-    /* --- Stage 5: Optimization (constant folding, then loop-invariant
-     * code motion over the folded TAC) --- */
-    TACList *tac_opt = optimize_constant_folding(tac);
+    /* --- Stage 5: Optimization (constant folding, then LICM) --- */
+    int collision = frontend_has_temp_collision(symtab);
+    double t_fold = 0.0, t_licm = 0.0;
+    TACList *tac_opt, *tac_licm;
+    if (collision) {
+        fprintf(stderr, "warning: a variable is named like a compiler temporary (t<N>); "
+                        "optimizations are disabled for this program\n");
+        tac_opt = tac_copy_list(tac);
+        tac_licm = tac_copy_list(tac);
+    } else {
+        t0 = now_seconds();
+        tac_opt = optimize_constant_folding(tac);
+        t_fold = now_seconds() - t0;
+        t0 = now_seconds();
+        tac_licm = optimize_loop_invariant_code_motion(tac_opt);
+        t_licm = now_seconds() - t0;
+    }
     printf("\n=== TAC (optimized: constant folding) ===\n");
     tac_print(tac_opt, stdout);
-
-    TACList *tac_licm = optimize_loop_invariant_code_motion(tac_opt);
     printf("\n=== TAC (optimized: + loop-invariant code motion) ===\n");
     tac_print(tac_licm, stdout);
+
+    /* --- Stage 5b: search / cache / explain / stats (only with flags) --- */
+    TACList *chosen = tac_licm;
+    const char *chosen_label = "fixed";
+    SearchResult sr;
+    memset(&sr, 0, sizeof sr);
+    int have_sr = 0;
+    double t_search = 0.0;
+
+    if (!collision && (opt.search || opt.learn)) {
+        SearchConfig cfg = search_default_config();
+        if (opt.budget > 0) cfg.budget = opt.budget;
+        t0 = now_seconds();
+        sr = search_best_sequence(tac, &cfg, NULL);
+        t_search = now_seconds() - t0;
+        have_sr = 1;
+        chosen = sr.best;
+        chosen_label = "searched";
+        printf("\n=== TAC (searched: ");
+        search_print_sequence(&sr, stdout);
+        printf(") ===\n");
+        tac_print(chosen, stdout);
+    }
+
+    /* TASK11-ANCHOR-B: --learn / --use-cache */
+    /* TASK10-ANCHOR: --explain */
+
+    if (!collision && opt.stats) {
+        printf("\n=== Stats ===\n");
+        cost_model_print(stdout);
+        stat_row("unoptimized", tac);
+        stat_row("fixed", tac_licm);
+        verify_row("fixed", tac, tac_licm, symtab);
+        if (chosen != tac_licm) {
+            stat_row(chosen_label, chosen);
+            verify_row(chosen_label, tac, chosen, symtab);
+        }
+        if (have_sr) {
+            printf("STAT search_candidates %d\n", sr.candidates);
+            printf("STAT search_ms %.3f\n", t_search * 1000.0);
+        }
+    }
 
     /* --- Stage 6: Errors + suggestions --- */
     if (parse_errors->count > 0 || semantic_errors->count > 0) {
@@ -117,7 +252,19 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (opt.timing) {
+        printf("\n=== Timing (ms) ===\n");
+        printf("TIME lex %.3f\n", t_lex * 1000.0);
+        printf("TIME parse %.3f\n", t_parse * 1000.0);
+        printf("TIME semantic %.3f\n", t_sem * 1000.0);
+        printf("TIME codegen %.3f\n", t_codegen * 1000.0);
+        printf("TIME fold %.3f\n", t_fold * 1000.0);
+        printf("TIME licm %.3f\n", t_licm * 1000.0);
+        if (have_sr) printf("TIME search %.3f\n", t_search * 1000.0);
+    }
+
     /* --- Cleanup --- */
+    if (have_sr) search_result_free(&sr);
     taclist_free(tac_licm);
     taclist_free(tac_opt);
     taclist_free(tac);
@@ -127,6 +274,7 @@ int main(int argc, char **argv) {
     parse_error_list_free(parse_errors);
     tokenlist_free(tokens);
     free(source);
+    free(opt.loo_files);
 
     return 0;
 }

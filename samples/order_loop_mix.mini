@@ -1,0 +1,18 @@
+int i;
+int n;
+int k;
+int c;
+int r;
+int s;
+
+n = 10;
+k = 3;
+i = 0;
+s = 0;
+
+while (i < n) {
+  c = k;
+  r = c * 2;
+  s = s + r;
+  i = i + 1;
+}

@@ -26,7 +26,7 @@ tests/%.bin: tests/%.c tests/support.c tests/support.h tests/test.h $(LIB_OBJS)
 run: $(TARGET)
 	./$(TARGET) $(FILE)
 
-test: $(TEST_BINS)
+test: $(TARGET) $(TEST_BINS)
 	@for t in $(TEST_BINS); do echo "== $$t"; ./$$t || exit 1; done
 	@echo "ALL TESTS PASSED"
 

@@ -1,0 +1,7 @@
+int x;
+int y;
+int z;
+
+x = 4;
+y = x;
+z = y * 2;

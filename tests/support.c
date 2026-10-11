@@ -15,6 +15,9 @@ const char *SAMPLE_FILES[] = {
     "samples/loop_invariant_chain.mini",
     "samples/loop_no_invariant.mini",
     "samples/loop_with_if.mini",
+    "samples/order_copyprop_fold.mini",
+    "samples/order_strength_cse.mini",
+    "samples/order_loop_mix.mini",
     NULL
 };
 
