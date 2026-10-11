@@ -75,9 +75,54 @@ static char *int_to_str(int value) {
 }
 
 static char *float_to_str(double value) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%g", value);
-    return dup_str(buf);
+    char *s = tac_format_double(value);
+    return s ? s : dup_str("0.0");
+}
+
+/* Declared type of each variable, recorded as declarations are walked, so
+ * assignments can widen int values into float variables explicitly: TAC
+ * operands are untyped text, and later stages decide int vs. float
+ * arithmetic from the literal/operand kinds alone. */
+typedef struct { char *name; int is_float; } VarType;
+static VarType *var_types = NULL;
+static size_t var_type_count = 0, var_type_cap = 0;
+
+static void var_types_reset(void) {
+    for (size_t i = 0; i < var_type_count; i++) free(var_types[i].name);
+    var_type_count = 0;
+}
+
+static void var_type_set(const char *name, int is_float) {
+    for (size_t i = 0; i < var_type_count; i++) {
+        if (strcmp(var_types[i].name, name) == 0) { var_types[i].is_float = is_float; return; }
+    }
+    if (var_type_count == var_type_cap) {
+        var_type_cap = var_type_cap ? var_type_cap * 2 : 16;
+        var_types = realloc(var_types, sizeof(VarType) * var_type_cap);
+    }
+    var_types[var_type_count].name = dup_str(name);
+    var_types[var_type_count].is_float = is_float;
+    var_type_count++;
+}
+
+static int var_is_float(const char *name) {
+    for (size_t i = 0; i < var_type_count; i++)
+        if (strcmp(var_types[i].name, name) == 0) return var_types[i].is_float;
+    return 0;
+}
+
+static int expr_is_float(AstNode *n) {
+    switch (n->type) {
+        case NODE_NUM_FLOAT: return 1;
+        case NODE_IDENT:     return var_is_float(n->as.ident.name);
+        case NODE_BINOP: {
+            TokenType op = n->as.binop.op;
+            if (op == TOK_EQ || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE)
+                return 0;
+            return expr_is_float(n->as.binop.left) || expr_is_float(n->as.binop.right);
+        }
+        default: return 0;
+    }
 }
 
 static void gen_stmt(AstNode *node, TACList *list);
@@ -119,10 +164,27 @@ static void gen_stmt(AstNode *node, TACList *list) {
 
     switch (node->type) {
         case NODE_VAR_DECL:
-            break; /* declarations don't emit TAC */
+            /* declarations don't emit TAC, but their type is remembered */
+            var_type_set(node->as.var_decl.name, node->as.var_decl.decl_type == TYPE_FLOAT);
+            break;
 
         case NODE_ASSIGN: {
             char *value_operand = gen_expr(node->as.assign.value, list);
+            /* int value into a float variable: widen explicitly so the
+             * variable holds a float from here on */
+            if (var_is_float(node->as.assign.name) && !expr_is_float(node->as.assign.value)) {
+                if (node->as.assign.value->type == NODE_NUM_INT) {
+                    free(value_operand);
+                    value_operand = float_to_str((double)node->as.assign.value->as.num_int.value);
+                } else {
+                    char *widened = codegen_new_temp();
+                    taclist_push(list, (TACInstr){
+                        .op = TAC_BINOP, .result = dup_str(widened),
+                        .arg1 = value_operand, .arg2 = dup_str("0.0"), .binop = TOK_PLUS
+                    });
+                    value_operand = widened;
+                }
+            }
             TACInstr instr = {
                 .op = TAC_ASSIGN,
                 .result = dup_str(node->as.assign.name),
@@ -209,9 +271,11 @@ static void gen_stmt(AstNode *node, TACList *list) {
 
 TACList *generate_tac(AstNode *program) {
     TACList *list = taclist_create();
+    var_types_reset();
     for (size_t i = 0; i < program->as.program.statements->count; i++) {
         gen_stmt(program->as.program.statements->items[i], list);
     }
+    var_types_reset();
     return list;
 }
 

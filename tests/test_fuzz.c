@@ -29,6 +29,33 @@ static void test_generator_output_is_mostly_accepted(void) {
     CHECK(accepted * 10 >= total * 9);   /* at least 90% */
 }
 
+/* The generator must reach the int -> float widening path and integral
+ * float literals, the cases that once slipped past the oracle. */
+static void test_generator_covers_float_widening(void) {
+    int widening = 0, integral_literal = 0;
+    for (unsigned seed = 0; seed < 100; seed++) {
+        char *src = fuzz_generate_program(seed, 6);
+        for (char *line = strtok(src, "\n"); line; line = strtok(NULL, "\n")) {
+            if (line[0] != 'f' || !strstr(line, " = ")) continue;
+            const char *rhs = strstr(line, " = ") + 3;
+            if (!strchr(rhs, 'f') && !strchr(rhs, '.')) widening++;
+            if (strstr(rhs, ".0 ") || strstr(rhs, ".0;") || strstr(rhs, ".0)")) {
+                /* a bare integral literal, not just a "/ n.0" divisor */
+                const char *p = rhs;
+                while ((p = strstr(p, ".0")) != NULL) {
+                    if (p > rhs && p[-1] >= '0' && p[-1] <= '9' &&
+                        !(p - rhs >= 3 && p[-3] == '/' ) && !(p - rhs >= 2 && p[-2] == '/'))
+                        integral_literal++;
+                    p += 2;
+                }
+            }
+        }
+        free(src);
+    }
+    CHECK(widening > 0);
+    CHECK(integral_literal > 0);
+}
+
 static void test_generator_is_deterministic(void) {
     char *a = fuzz_generate_program(7, 5);
     char *b = fuzz_generate_program(7, 5);
@@ -61,6 +88,7 @@ static void test_fuzzer_catches_a_broken_pass(void) {
 
 int main(void) {
     test_generator_output_is_mostly_accepted();
+    test_generator_covers_float_widening();
     test_generator_is_deterministic();
     test_correct_passes_survive_fuzzing();
     test_fuzzer_catches_a_broken_pass();

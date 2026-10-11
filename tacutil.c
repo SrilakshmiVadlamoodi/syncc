@@ -1,6 +1,7 @@
 #include "tacutil.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,4 +110,28 @@ char *tac_list_to_string(const TACList *list) {
         free(line);
     }
     return out;
+}
+
+char *tac_format_double(double v) {
+    char buf[800];
+    int ok = 0;
+    if (!isfinite(v)) return NULL;
+
+    /* shortest %g form that parses back exactly */
+    for (int prec = 1; prec <= 17 && !ok; prec++) {
+        snprintf(buf, sizeof buf, "%.*g", prec, v);
+        if (strtod(buf, NULL) == v) ok = 1;
+    }
+    /* %g switched to exponent notation, which a TAC literal cannot hold:
+     * use plain decimal digits with just enough fractional places */
+    if (!ok || strpbrk(buf, "eE") != NULL) {
+        ok = 0;
+        for (int dec = 0; dec <= 340 && !ok; dec++) {
+            snprintf(buf, sizeof buf, "%.*f", dec, v);
+            if (strtod(buf, NULL) == v) ok = 1;
+        }
+    }
+    if (!ok) return NULL;
+    if (strchr(buf, '.') == NULL) strcat(buf, ".0");
+    return tac_dup_str(buf);
 }

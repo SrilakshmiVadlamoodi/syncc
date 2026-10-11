@@ -64,7 +64,7 @@ static void gen_int_expr(Rng *r, Buf *b, int depth) {
 static void gen_float_expr(Rng *r, Buf *b, int depth) {
     if (depth == 0 || rng_range(r, 3) == 0) {
         if (rng_range(r, 2)) buf_printf(b, "f%d", rng_range(r, NF));
-        else buf_printf(b, "%d.5", rng_range(r, 10));
+        else buf_printf(b, rng_range(r, 2) ? "%d.5" : "%d.0", rng_range(r, 10));
         return;
     }
     int k = rng_range(r, 4);
@@ -108,7 +108,8 @@ static void gen_stmt(Rng *r, Buf *b, int depth, int *loops) {
         buf_printf(b, ";\n");
     } else if (k == 2) {
         buf_printf(b, "f%d = ", rng_range(r, NF));
-        gen_float_expr(r, b, 3);
+        if (rng_range(r, 3) == 0) gen_int_expr(r, b, 2);   /* int -> float widening */
+        else gen_float_expr(r, b, 3);
         buf_printf(b, ";\n");
     } else if (k <= 4) {
         buf_printf(b, "if (");

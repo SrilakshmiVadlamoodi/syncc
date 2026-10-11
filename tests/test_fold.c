@@ -35,8 +35,26 @@ int main(void) {
     expect("t1 = 1.0 / 0.0\n", "t1 = 1.0 / 0.0\n");
     expect("t1 = 5 / 0\n", "t1 = 5 / 0\n");
     expect("t1 = 9223372036854775807 + 1\n", "t1 = 9223372036854775807 + 1\n");
-    expect("t1 = 99999999999999999999999999999999999999999.0 * 99999999999999999999999999999999999999999.0\n",
-           "t1 = 99999999999999999999999999999999999999999.0 * 99999999999999999999999999999999999999999.0\n");
+    /* huge float results are written as exact plain decimals (a TAC literal
+     * has no exponent form) and still equal the runtime value */
+    {
+        const char *huge = "t1 = 99999999999999999999999999999999999999999.0 * "
+                           "99999999999999999999999999999999999999999.0\nx = t1\n";
+        TACList *in = tac_from_text(huge);
+        TACList *out = optimize_constant_folding(in);
+        CHECK(out->items[0].op == TAC_ASSIGN);
+        CHECK(tac_is_float_literal(out->items[0].arg1));
+        CHECK(strpbrk(out->items[0].arg1, "eE") == NULL);
+        SymbolTable *sym = symtab_of("x");
+        InterpResult a = interp_run(in, NULL, INTERP_DEFAULT_STEP_LIMIT);
+        InterpResult b = interp_run(out, NULL, INTERP_DEFAULT_STEP_LIMIT);
+        CHECK(interp_equivalent(&a, &b, sym));
+        interp_result_free(&a);
+        interp_result_free(&b);
+        symtab_free(sym);
+        taclist_free(in);
+        taclist_free(out);
+    }
 
     /* precision: folded value must equal the runtime value exactly */
     {

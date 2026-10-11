@@ -15,4 +15,9 @@ const char *tac_binop_symbol(TokenType op);
 char *tac_instr_to_string(const TACInstr *in);   /* heap; caller frees */
 char *tac_list_to_string(const TACList *list);   /* heap; one line per instr */
 
+/* Decimal text for a finite double that parses back to exactly `v`, always
+ * containing a '.' and never using exponent notation, so it is a valid TAC
+ * float literal. Heap string; NULL if `v` is not finite. */
+char *tac_format_double(double v);
+
 #endif

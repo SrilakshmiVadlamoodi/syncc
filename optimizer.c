@@ -19,20 +19,12 @@ static int is_comparison_op(TokenType op) {
     return op == TOK_EQ || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE;
 }
 
-/* Formats `v` as a float literal that parses back to exactly `v`, always
- * containing a '.' so it stays a float literal. Fails (returns 0) for
- * non-finite values and for values that would print in exponent form,
- * because tac_is_numeric_literal cannot represent those. */
+/* Float result as a TAC literal (exact, always with a '.'). Fails only for
+ * non-finite values. */
 static int format_float_literal(double v, char **out) {
-    char buf[64];
-    if (!isfinite(v)) return 0;
-    for (int prec = 6; prec <= 17; prec++) {
-        snprintf(buf, sizeof(buf), "%.*g", prec, v);
-        if (strtod(buf, NULL) == v) break;
-    }
-    if (strpbrk(buf, "eE") != NULL) return 0;
-    if (strchr(buf, '.') == NULL) strcat(buf, ".0");
-    *out = tac_dup_str(buf);
+    char *s = tac_format_double(v);
+    if (!s) return 0;
+    *out = s;
     return 1;
 }
 
