@@ -58,21 +58,20 @@ from a syllabus-module mapping alone:
   the spec's structured-error intent without C++-style exceptions.
   Parsing never aborts on a bad token; it recovers and keeps collecting
   errors (see §2, syntax analysis).
-- **Optimization scope reduced to constant folding + loop-invariant code
-  motion; dead code elimination is still out.** The original spec also
-  asked for dead code elimination. That was dropped to keep the project
-  weekend-sized given the extra boilerplate C requires relative to
-  Python (manual TAC list management, explicit string ownership per
-  instruction, no garbage collector); the `dead` variable in
-  `constant_folding.mini` is a known, intentional gap — it is assigned
-  but never used, and is *not* removed by this build. LICM was added on
-  top of folding since it's the other optimization most directly tied to
-  `while` loops (Module 5 + Module 4's control-flow lowering together),
-  and — unlike full dead-code elimination — it stays tractable without a
-  real CFG/dominator pass by restricting itself to straight-line loop
-  bodies (`samples/loop_with_if.mini` shows the restriction: a loop body
-  with an `if` inside it is left untouched rather than risk hoisting a
-  conditionally-executed assignment incorrectly).
+- **Optimization scope grew in two stages.** The first build had constant
+  folding plus loop-invariant code motion only; dead code elimination was
+  dropped then to keep the project weekend-sized given the extra
+  boilerplate C requires relative to Python (manual TAC list management,
+  explicit string ownership per instruction, no garbage collector), and
+  `dead` in `constant_folding.mini` was a known gap. LICM stays
+  restricted to straight-line loop bodies so it needs no real CFG or
+  dominator pass (`samples/loop_with_if.mini` shows the restriction: a
+  loop body with an `if` inside is left untouched rather than risk
+  hoisting a conditionally-executed assignment). The later search-based
+  work (§6) added copy propagation, strength reduction, common
+  subexpression elimination and a block-scoped dead code elimination;
+  `dead` in `constant_folding.mini` is still kept, because it is the last
+  store to a user variable and final variable values are observable.
 - **Memory cleanup**: `main.c` runs an explicit teardown pass at the end
   of `main()` (`taclist_free`, `symtab_free`, `ast_free`,
   `tokenlist_free`, etc.) for every structure it allocated, since this
@@ -115,7 +114,7 @@ call site in `main.c` needs no changes to support it later.
 
 The interpreter oracle exposed three problems in the pre-existing passes, each fixed with a test that failed first:
 
-1. **Constant folding changed value kind and precision.** `2.0 * 2.0` folded to the *integer* `4`; `0.1 + 0.2` lost digits (`%g`); integer overflow was folded with undefined behaviour. Folding now keeps float literals as floats, round-trips exactly, and declines to fold overflow or results needing exponent notation.
+1. **Float values lost their kind and precision.** Float literals were printed with `%g`, so `2.0` became `2` (an *integer* literal to every later stage), `0.1234567891` lost digits and `100000000.0` became `1e+08`, which no stage recognised as a number. Folding had the same flaw (`2.0 * 2.0` folded to `4`), integer overflow was folded with undefined behaviour, and an `int` assigned to a `float` variable stayed an int, so `float h; h = 1; h = h / 2;` computed `0`. Code generation now writes every float literal as exact plain decimal text containing a `.`, widens an int assigned to a float variable explicitly (`h = 1.0`, or `t = i + 0.0`), and folding keeps float results float, round-trips exactly, and declines only to fold integer overflow. The last two were found by the whole-branch review rather than by the oracle: TAC itself was the thing that was untyped, so the interpreter agreed with the miscompiled program. `tests/test_float.c` checks the language-level value in all three modes (unoptimized, fixed, searched).
 2. **LICM hoisted user-variable assignments and divisions.** That is unsound for a loop that runs zero times, or that reads the variable before assigning it, and a hoisted division can introduce a divide-by-zero. LICM now hoists only compiler temporaries, and divisions only by a nonzero literal. The cost is that `t = t2` stays in the loop in `loop_invariant.mini` (the multiply itself is still hoisted).
 3. **A user variable named like a compiler temp** (`t1`) is indistinguishable from codegen temps by spelling. Optimization is disabled for such programs, with a warning.
 

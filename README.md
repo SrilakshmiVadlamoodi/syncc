@@ -90,7 +90,7 @@ Benchmarks: `bench/run_bench.sh` (cost table), `bench/compile_time.sh`
 | `parser.c/h` | Recursive-descent parser → AST, with panic-mode error recovery |
 | `semantic.c/h` | Symbol table + redeclaration / undeclared-use / type-mismatch checks |
 | `codegen.c/h` | AST → three-address code (TAC) |
-| `optimizer.c/h` | Constant folding + loop-invariant code motion over TAC |
+| `optimizer.c/h` | Constant folding + loop-invariant code motion over TAC (the other passes are in `passes.c/h`) |
 | `passes.c/h` | Copy propagation, strength reduction, CSE, DCE; pass registry; sequence application |
 | `cost.c/h` | Weighted cost model for TAC instructions |
 | `interp.c/h` | TAC interpreter: dynamic cost metric and correctness oracle |
