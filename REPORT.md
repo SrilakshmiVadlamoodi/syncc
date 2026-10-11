@@ -20,7 +20,7 @@ source file.
 | 2. Syntax analysis | `parser.c/h` | Module 2 — Syntax Analysis | Recursive-descent parser, one function per grammar rule (`statement`, `var_decl`, `assign`, `if_stmt`, `while_stmt`, `block`, and a precedence chain `comparison → additive → multiplicative → primary` for expressions). Builds an AST as a tagged union (`NodeType` + `union`). Implements **panic-mode error recovery**: on an unexpected token, the error is recorded and the parser skips forward to the next `;` or `}` rather than aborting, so multiple syntax errors can be collected in a single run. |
 | 3. Semantic analysis | `semantic.c/h` | Module 3 — Semantic Analysis | Builds a symbol table (name → type, declared line) while walking the AST. Checks: redeclaration, use-before-declaration, and type mismatch (narrowing a `float` expression into an `int` variable is flagged; `int → float` widening is allowed, matching ordinary C promotion). Errors are collected in a list rather than raised, consistent with the parser's non-aborting design. |
 | 4. Intermediate code generation | `codegen.c/h` | Module 4 — Intermediate Code Generation | Walks the (semantically checked) AST and emits three-address code: `result = arg1 op arg2` for expressions, fresh `t<N>` temporaries per sub-expression, and `L<N>` labels with `goto`/`ifFalse ... goto` for `if`/`while` control flow — the standard TAC lowering pattern. |
-| 5. Optimization | `optimizer.c/h` | Module 5 — Optimization | Two passes, applied in sequence. **Constant folding**: any `TAC_BINOP` whose both operands are literal text is evaluated at compile time and rewritten to a plain assignment (e.g. `t1 = 2 + 3` → `t1 = 5`), covering both arithmetic and comparison operators. **Loop-invariant code motion (LICM)**: `while` loops are located by their back-edge (a `TAC_GOTO` jumping to an earlier `TAC_LABEL`); for a loop whose body is a single straight-line block, any assignment whose operands are all loop-invariant and whose target is assigned exactly once in the body is hoisted into a preheader placed just before the loop. The driver prints unoptimized TAC, TAC after folding, and TAC after folding + LICM, all three side by side. |
+| 5. Optimization | `optimizer.c/h` | Module 5 — Optimization | Two passes, applied in sequence. **Constant folding**: any `TAC_BINOP` whose both operands are literal text is evaluated at compile time and rewritten to a plain assignment (e.g. `t1 = 2 + 3` → `t1 = 5`), covering both arithmetic and comparison operators. **Loop-invariant code motion (LICM)**: `while` loops are located by their back-edge (a `TAC_GOTO` jumping to an earlier `TAC_LABEL`); for a loop whose body is a single straight-line block, any compiler temporary whose operands are all loop-invariant and which is assigned exactly once in the body is hoisted into a preheader placed just before the loop (user-variable assignments and non-literal divisions are never hoisted; see §6.2). The driver prints unoptimized TAC, TAC after folding, and TAC after folding + LICM, all three side by side. Further passes (copy propagation, strength reduction, CSE, DCE), a pass-ordering search and a verifying interpreter were added later and are described in §6 and §7. |
 | 6. Error suggestion engine | `error_engine.c/h` | Cross-cutting / AI hook | A static rule table keyed on `(expected_token, found_token)` maps common mistakes (missing semicolon, unclosed parenthesis, reserved word used as an identifier, etc.) to a human-readable suggestion, with a generic `"Syntax error near line X"` fallback when nothing matches. An optional LLM (Claude Haiku) fallback hook exists in the same interface but is currently a stub — see §4. |
 | 7. Driver / CLI | `main.c`, `Makefile` | — | Reads a `.mini` file, runs all six stages in order, prints tokens / AST / symbol table / TAC (before and after optimization) / errors with suggestions, and frees every heap allocation before exit. |
 
@@ -188,3 +188,59 @@ Indicative only. The units differ (TAC operations with no registers or addressin
 - Claims: the searched order lowers weighted dynamic cost relative to the fixed pipeline on the benchmark set (numbers above); every optimized program matches the original on all user variables (interpreter on the benchmarks, fuzzer on generated programs); the compile-time cost of search is measured and the cache avoids it at a measured loss of quality; one hot spot (LICM) was found by profiling and fixed.
 - Does not claim: general superiority over GCC/LLVM; that the cost model reflects real hardware; that the cache is machine learning; any figure not produced by the scripts above.
 - Not implemented: the stretch-goal window superoptimizer (spec §11).
+
+## 7. Project summary (for evaluation)
+
+### 7.1 Problem and goal
+
+The base project is a complete mini-compiler pipeline in C for a C-like language (`int`/`float`, assignment, `if`/`else`, `while`) covering every syllabus module: lexical analysis, recursive-descent parsing with panic-mode recovery, semantic analysis, three-address code (TAC) generation, optimization, and a rule-based error-suggestion engine.
+
+The extension asked for something unique that makes the compiler more efficient. A claim such as "1% better than existing compilers" cannot be made in general (GCC and LLVM are decades ahead), so the goal was reframed as a **measurable, defensible efficiency claim with a correctness guarantee**: show, with numbers, how much cheaper the generated TAC becomes and what the compile-time cost is, while proving the optimizer does not change program behaviour.
+
+### 7.2 Contributions
+
+1. **Cost model and TAC interpreter.** Every TAC instruction has a weight (mul=3, div=10, ...). The interpreter runs a program and returns its *dynamic* (weighted, executed) cost and final variable state. It is used as the benchmark metric and as the correctness oracle.
+2. **Pass-ordering search.** Instead of a fixed pass order, the compiler tries sequences of six passes (fold, LICM, copy propagation, strength reduction, CSE, DCE), memoized by TAC hash and bounded by a budget, and keeps the cheapest result that the interpreter confirms. The search is useful because passes enable one another (for example copy propagation exposes a constant fold), so the best order differs per program.
+3. **Feature-keyed heuristic cache.** Search results are stored against coarse program features (instruction/loop/multiply counts and so on) and reused for similar programs without searching. It is a lookup table with nearest-neighbour matching, not machine learning, and it is evaluated leave-one-out so it is never tested on its own training data. It never costs more than the fixed pipeline.
+4. **Self-verification.** A differential fuzzer generates random terminating programs and checks every pass, the fixed pipeline, all passes combined and the searched sequence against the unoptimized program under random initial values. A deliberately broken pass is used to prove the fuzzer can fail.
+5. **Explainability.** `--explain` shows, for the chosen sequence, which pass changed which instruction and by how much the cost dropped.
+6. **Compile-time engineering.** Profiling on generated large programs found a quadratic hot spot in LICM, fixed to linear time (322 ms → 14 ms at 8000 statements).
+
+### 7.3 Results at a glance
+
+- Searched order vs the original fixed fold → LICM pipeline: lower weighted dynamic cost on six of nine programs. The three ordering-sensitive programs written for this purpose improve by 17% to 50%; on the six other programs the gain is 0% to 57% (three of them 0%).
+- Cache: recovers 36% of the search's gain on held-out programs (nine-program sample, so small-sample).
+- Correctness: 500 generated programs (18,000 comparisons) with zero mismatches; 543 unit/property/regression checks across 12 test suites, all passing.
+- Search time is the dominant compile-time cost on large programs (seconds at budget 300) and negligible on small ones; the cache and fixed pipeline avoid it.
+- Optional reference: within a few instructions of `gcc -O1` on five loop kernels by static count, and well below `gcc -O0` (indicative only; see §6.4 caveats).
+
+### 7.4 Defects the verification found
+
+Reading the existing code while planning, the interpreter oracle, the leave-one-out evaluation and a final independent review together found five real defects, all fixed with a test that failed first (details in §6.2): float literals lost their kind and precision; integers assigned to float variables were not widened, so `float h; h = 1; h = h / 2;` computed `0`; LICM hoisted user-variable assignments and divisions (unsound for loops that run zero times); a user variable named like a compiler temporary (`t1`) was indistinguishable from one; and a cached sequence could cost more than the fixed pipeline.
+
+### 7.5 How to reproduce
+
+```
+make                              # build ./minicc
+make test                         # 12 suites, ALL TESTS PASSED
+./minicc --search --stats samples/order_loop_mix.mini     # search + equivalence check
+./minicc --search --explain samples/order_strength_cse.mini
+bench/run_bench.sh                # the cost table in §6.3
+./minicc --fuzz 500 --seed 42     # differential fuzzing
+./minicc --loo samples/order_*.mini samples/loop_*.mini samples/valid.mini samples/constant_folding.mini
+bench/compile_time.sh 1000 2000 4000   # per-stage compile time
+bench/gcc_compare.sh              # optional GCC side table
+```
+
+### 7.6 Honest limitations
+
+- Gains are measured under a defined cost model on small programs; they are not a claim about real hardware or about being faster than production compilers.
+- The three `order_*` benchmarks were written to be ordering-sensitive; they demonstrate the mechanism, not typical code.
+- The cache is trained and tested on nine programs, features are coarse, and nearest-neighbour matching is approximate.
+- Search time grows with program size; it is a trade-off, not free.
+- Passes are basic-block scoped; there is no dominator/CFG framework, no register allocation and no native code generation, so the generated code is TAC rather than machine code.
+- The optional stretch goal (a window superoptimizer that discovers its own rewrite rules) was not implemented.
+
+### 7.7 Possible future work
+
+A control-flow-graph and dominator framework (enabling global passes and loop inversion so user-variable assignments can be hoisted safely), per-loop pass ordering, a real backend with register allocation so the comparison with GCC becomes like-for-like, and the window superoptimizer.
