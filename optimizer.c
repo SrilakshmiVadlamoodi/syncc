@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
+#include <math.h>
 
 static char *int_to_str(long value) {
     char buf[32];
@@ -12,68 +14,90 @@ static char *int_to_str(long value) {
     return tac_dup_str(buf);
 }
 
-static char *float_to_str(double value) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%g", value);
-    return tac_dup_str(buf);
-}
-
 static int is_comparison_op(TokenType op) {
     return op == TOK_EQ || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE;
 }
 
+/* Formats `v` as a float literal that parses back to exactly `v`, always
+ * containing a '.' so it stays a float literal. Fails (returns 0) for
+ * non-finite values and for values that would print in exponent form,
+ * because tac_is_numeric_literal cannot represent those. */
+static int format_float_literal(double v, char **out) {
+    char buf[64];
+    if (!isfinite(v)) return 0;
+    for (int prec = 6; prec <= 17; prec++) {
+        snprintf(buf, sizeof(buf), "%.*g", prec, v);
+        if (strtod(buf, NULL) == v) break;
+    }
+    if (strpbrk(buf, "eE") != NULL) return 0;
+    if (strchr(buf, '.') == NULL) strcat(buf, ".0");
+    *out = tac_dup_str(buf);
+    return 1;
+}
+
 /* Attempts to fold `a op b` into a single literal. Returns 1 and sets
  * *out (heap-allocated) on success; returns 0 (leaving *out untouched)
- * if the operator isn't foldable or would divide by zero -- callers
- * must fall back to keeping the original TAC_BINOP unchanged. */
+ * when the operator isn't foldable, would divide by zero, would overflow
+ * integer arithmetic, or the float result cannot be written back as a
+ * plain literal -- callers keep the original TAC_BINOP in that case. */
 static int fold_binop(TokenType op, const char *a, const char *b, char **out) {
+    int a_float = tac_is_float_literal(a);
+    int b_float = tac_is_float_literal(b);
+
     if (is_comparison_op(op)) {
-        double av = atof(a), bv = atof(b);
-        int result;
-        switch (op) {
-            case TOK_EQ: result = (av == bv); break;
-            case TOK_LT: result = (av < bv); break;
-            case TOK_GT: result = (av > bv); break;
-            case TOK_LE: result = (av <= bv); break;
-            case TOK_GE: result = (av >= bv); break;
-            default: return 0;
+        int r;
+        if (!a_float && !b_float) {
+            long x = strtol(a, NULL, 10), y = strtol(b, NULL, 10);
+            switch (op) {
+                case TOK_EQ: r = (x == y); break;
+                case TOK_LT: r = (x < y); break;
+                case TOK_GT: r = (x > y); break;
+                case TOK_LE: r = (x <= y); break;
+                case TOK_GE: r = (x >= y); break;
+                default: return 0;
+            }
+        } else {
+            double x = atof(a), y = atof(b);
+            switch (op) {
+                case TOK_EQ: r = (x == y); break;
+                case TOK_LT: r = (x < y); break;
+                case TOK_GT: r = (x > y); break;
+                case TOK_LE: r = (x <= y); break;
+                case TOK_GE: r = (x >= y); break;
+                default: return 0;
+            }
         }
-        *out = int_to_str(result);
+        *out = int_to_str(r);
         return 1;
     }
 
-    int is_float = strchr(a, '.') != NULL || strchr(b, '.') != NULL;
-
-    if (is_float) {
-        double av = atof(a), bv = atof(b);
-        double result;
+    if (a_float || b_float) {
+        double x = atof(a), y = atof(b), r;
         switch (op) {
-            case TOK_PLUS:  result = av + bv; break;
-            case TOK_MINUS: result = av - bv; break;
-            case TOK_STAR:  result = av * bv; break;
+            case TOK_PLUS:  r = x + y; break;
+            case TOK_MINUS: r = x - y; break;
+            case TOK_STAR:  r = x * y; break;
             case TOK_SLASH:
-                if (bv == 0.0) return 0;
-                result = av / bv;
+                if (y == 0.0) return 0;
+                r = x / y;
                 break;
             default: return 0;
         }
-        *out = float_to_str(result);
-        return 1;
+        return format_float_literal(r, out);
     }
 
-    long av = atol(a), bv = atol(b);
-    long result;
+    long x = strtol(a, NULL, 10), y = strtol(b, NULL, 10), r;
     switch (op) {
-        case TOK_PLUS:  result = av + bv; break;
-        case TOK_MINUS: result = av - bv; break;
-        case TOK_STAR:  result = av * bv; break;
+        case TOK_PLUS:  if (__builtin_add_overflow(x, y, &r)) return 0; break;
+        case TOK_MINUS: if (__builtin_sub_overflow(x, y, &r)) return 0; break;
+        case TOK_STAR:  if (__builtin_mul_overflow(x, y, &r)) return 0; break;
         case TOK_SLASH:
-            if (bv == 0) return 0;
-            result = av / bv;
+            if (y == 0 || (x == LONG_MIN && y == -1)) return 0;
+            r = x / y;
             break;
         default: return 0;
     }
-    *out = int_to_str(result);
+    *out = int_to_str(r);
     return 1;
 }
 
