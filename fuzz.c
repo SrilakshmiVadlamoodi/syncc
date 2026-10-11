@@ -188,88 +188,98 @@ static void report_failure(FILE *out, unsigned seed, const char *src, const char
     fprintf(out, "--- program ---\n%s---------------\n", src);
 }
 
+/* Checks one program (given as source text) and adds to `st`. */
+static void check_program(const char *src, unsigned pseed, int envs_per_program,
+                          const PassInfo *extra, FILE *out, FuzzStats *st) {
+    const long FUZZ_STEP_LIMIT = 200000;
+
+    st->programs++;
+    FrontEnd *fe = frontend_run(src);
+    if (fe->parse_errors || fe->semantic_errors || frontend_has_temp_collision(fe->symtab)) {
+        st->rejected++;
+        frontend_free(fe);
+        return;
+    }
+
+    /* candidates: each pass alone, fixed pipeline, all passes twice, searched, extra */
+    size_t np = pass_count();
+    size_t cap = np + 5;
+    Candidate *cands = calloc(cap, sizeof(Candidate));
+    size_t nc = 0;
+
+    for (size_t p = 0; p < np; p++) {
+        cands[nc].label = tac_dup_str(PASS_REGISTRY[p].name);
+        cands[nc++].list = PASS_REGISTRY[p].fn(fe->tac);
+    }
+    cands[nc].label = tac_dup_str("fixed");
+    cands[nc++].list = apply_fixed_pipeline(fe->tac);
+
+    int all[2 * 16];
+    int alen = 0;
+    for (int rep = 0; rep < 2; rep++)
+        for (size_t p = 0; p < np && alen < 2 * 16; p++) all[alen++] = (int)p;
+    cands[nc].label = tac_dup_str("all-twice");
+    cands[nc++].list = apply_sequence(fe->tac, all, alen);
+
+    SearchConfig cfg = search_default_config();
+    cfg.budget = 150;
+    SearchResult sr = search_best_sequence(fe->tac, &cfg, NULL);
+    cands[nc].label = tac_dup_str("searched");
+    cands[nc++].list = tac_copy_list(sr.best);
+    search_result_free(&sr);
+
+    if (extra) {
+        cands[nc].label = tac_dup_str(extra->name);
+        cands[nc++].list = extra->fn(fe->tac);
+    }
+
+    Rng erng = { pseed ^ 0x9e3779b9u };
+    for (int e = 0; e < envs_per_program; e++) {
+        Env *env = random_env(fe->symtab, &erng);
+        InterpResult ref = interp_run(fe->tac, env, FUZZ_STEP_LIMIT);
+        if (ref.status != INTERP_OK) {
+            st->skipped++;
+            interp_result_free(&ref);
+            env_free(env);
+            continue;
+        }
+        for (size_t c = 0; c < nc; c++) {
+            InterpResult got = interp_run(cands[c].list, env, FUZZ_STEP_LIMIT);
+            st->checks++;
+            if (!interp_equivalent(&ref, &got, fe->symtab)) {
+                st->failures++;
+                report_failure(out, pseed, src, cands[c].label, &ref, &got, fe->symtab);
+            }
+            interp_result_free(&got);
+        }
+        interp_result_free(&ref);
+        env_free(env);
+    }
+
+    for (size_t c = 0; c < nc; c++) {
+        free(cands[c].label);
+        taclist_free(cands[c].list);
+    }
+    free(cands);
+    frontend_free(fe);
+}
+
+FuzzStats fuzz_check_source(const char *source, unsigned seed, int envs_per_program,
+                            const PassInfo *extra, FILE *out) {
+    FuzzStats st = { 0, 0, 0, 0, 0 };
+    check_program(source, seed, envs_per_program, extra, out, &st);
+    return st;
+}
+
 FuzzStats fuzz_run(int n, unsigned seed, int envs_per_program,
                    const PassInfo *extra, FILE *out) {
     FuzzStats st = { 0, 0, 0, 0, 0 };
-    const long FUZZ_STEP_LIMIT = 200000;
-
     for (int pi = 0; pi < n; pi++) {
         unsigned pseed = seed + (unsigned)pi * 7919u;
         char *src = fuzz_generate_program(pseed, 6);
-        st.programs++;
-
-        FrontEnd *fe = frontend_run(src);
-        if (fe->parse_errors || fe->semantic_errors || frontend_has_temp_collision(fe->symtab)) {
-            st.rejected++;
-            frontend_free(fe);
-            free(src);
-            continue;
-        }
-
-        /* candidates: each pass alone, fixed pipeline, all passes twice, searched, extra */
-        size_t np = pass_count();
-        size_t cap = np + 5;
-        Candidate *cands = calloc(cap, sizeof(Candidate));
-        size_t nc = 0;
-
-        for (size_t p = 0; p < np; p++) {
-            cands[nc].label = tac_dup_str(PASS_REGISTRY[p].name);
-            cands[nc++].list = PASS_REGISTRY[p].fn(fe->tac);
-        }
-        cands[nc].label = tac_dup_str("fixed");
-        cands[nc++].list = apply_fixed_pipeline(fe->tac);
-
-        int all[2 * 16];
-        int alen = 0;
-        for (int rep = 0; rep < 2; rep++)
-            for (size_t p = 0; p < np && alen < 2 * 16; p++) all[alen++] = (int)p;
-        cands[nc].label = tac_dup_str("all-twice");
-        cands[nc++].list = apply_sequence(fe->tac, all, alen);
-
-        SearchConfig cfg = search_default_config();
-        cfg.budget = 150;
-        SearchResult sr = search_best_sequence(fe->tac, &cfg, NULL);
-        cands[nc].label = tac_dup_str("searched");
-        cands[nc++].list = tac_copy_list(sr.best);
-        search_result_free(&sr);
-
-        if (extra) {
-            cands[nc].label = tac_dup_str(extra->name);
-            cands[nc++].list = extra->fn(fe->tac);
-        }
-
-        Rng erng = { pseed ^ 0x9e3779b9u };
-        for (int e = 0; e < envs_per_program; e++) {
-            Env *env = random_env(fe->symtab, &erng);
-            InterpResult ref = interp_run(fe->tac, env, FUZZ_STEP_LIMIT);
-            if (ref.status != INTERP_OK) {
-                st.skipped++;
-                interp_result_free(&ref);
-                env_free(env);
-                continue;
-            }
-            for (size_t c = 0; c < nc; c++) {
-                InterpResult got = interp_run(cands[c].list, env, FUZZ_STEP_LIMIT);
-                st.checks++;
-                if (!interp_equivalent(&ref, &got, fe->symtab)) {
-                    st.failures++;
-                    report_failure(out, pseed, src, cands[c].label, &ref, &got, fe->symtab);
-                }
-                interp_result_free(&got);
-            }
-            interp_result_free(&ref);
-            env_free(env);
-        }
-
-        for (size_t c = 0; c < nc; c++) {
-            free(cands[c].label);
-            taclist_free(cands[c].list);
-        }
-        free(cands);
-        frontend_free(fe);
+        check_program(src, pseed, envs_per_program, extra, out, &st);
         free(src);
     }
-
     fprintf(out, "fuzz: %d programs (%d rejected by front end), %d checks, %d skipped, %d failures\n",
             st.programs, st.rejected, st.checks, st.skipped, st.failures);
     return st;

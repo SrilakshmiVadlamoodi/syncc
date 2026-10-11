@@ -241,6 +241,8 @@ int main(int argc, char **argv) {
     }
 
     TACList *cached_result = NULL;
+    int cached_seq[SEARCH_MAX_SEQ];
+    int cached_len = -1;   /* >= 0 once a cached sequence was applied */
     if (!collision && opt.use_cache && !have_sr) {
         HeuristicCache *cache = cache_load(opt.cache_path);
         Features ft = heuristic_features(tac);
@@ -259,6 +261,8 @@ int main(int argc, char **argv) {
                 goto cache_done;
             }
             chosen = cached_result;
+            cached_len = e->len;
+            memcpy(cached_seq, e->seq, sizeof(int) * (size_t)e->len);
             chosen_label = "cached";
             printf("\n=== TAC (cache %s, distance %d: ", dist == 0 ? "exact" : "nearest", dist);
             if (e->len == 0) printf("(none)");
@@ -276,6 +280,8 @@ cache_done:;
         printf("\n=== Explain (%s) ===\n", chosen_label);
         if (have_sr) {
             explain_sequence(tac, sr.sequence, sr.sequence_len, NULL, stdout);
+        } else if (cached_len >= 0) {
+            explain_sequence(tac, cached_seq, cached_len, NULL, stdout);
         } else {
             int fixed[2] = { pass_index("fold"), pass_index("licm") };
             explain_sequence(tac, fixed, 2, NULL, stdout);

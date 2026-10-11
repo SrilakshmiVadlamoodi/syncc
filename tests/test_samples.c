@@ -97,10 +97,24 @@ static void test_cli_search_and_stats(void) {
     free(timed);
 }
 
+
+static void test_cli_use_cache_explain_shows_cached_sequence(void) {
+    remove("tests_tmp_cache2.txt");
+    char *learned = run_cli("--learn --cache tests_tmp_cache2.txt samples/order_strength_cse.mini");
+    free(learned);
+    char *out = run_cli("--use-cache --explain --cache tests_tmp_cache2.txt samples/order_strength_cse.mini");
+    remove("tests_tmp_cache2.txt");
+    CHECK(strstr(out, "=== Explain (cached) ===") != NULL);
+    /* the cached sequence is strength, cse, copyprop, dce -- not the fixed fold, licm */
+    CHECK(strstr(out, "[strength]") != NULL);
+    CHECK(strstr(out, "[cse]") != NULL);
+    free(out);
+}
 int main(void) {
     test_every_sample_is_clean_and_search_is_sound();
     test_ordering_sensitive_samples_improve();
     test_temp_name_collision_detected();
     test_cli_search_and_stats();
+    test_cli_use_cache_explain_shows_cached_sequence();
     TEST_END();
 }

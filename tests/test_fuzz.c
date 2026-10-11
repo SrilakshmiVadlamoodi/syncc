@@ -76,6 +76,32 @@ static void test_correct_passes_survive_fuzzing(void) {
     free(log);
 }
 
+/* Programs whose ORIGINAL run traps or never terminates are skipped, not
+ * reported as failures (spec section 6). */
+static void test_trapping_and_nonterminating_programs_are_skipped(void) {
+    FILE *f = capture_open();
+    FuzzStats trap = fuzz_check_source("int a; int b; a = 0; b = 1 / a;", 1, 3, NULL, f);
+    CHECK(trap.skipped == 3);
+    CHECK(trap.checks == 0);
+    CHECK(trap.failures == 0);
+
+    FuzzStats spin = fuzz_check_source("int a; a = 1; while (a > 0) { a = a + 0; }", 1, 2, NULL, f);
+    CHECK(spin.skipped == 2);
+    CHECK(spin.failures == 0);
+
+    /* a healthy program through the same entry point is actually checked */
+    FuzzStats ok = fuzz_check_source("int a; int b; a = 2; b = a * 2 + a * 2;", 1, 2, NULL, f);
+    CHECK(ok.skipped == 0);
+    CHECK(ok.checks > 0);
+    CHECK(ok.failures == 0);
+
+    /* front-end errors are rejected, not checked */
+    FuzzStats bad = fuzz_check_source("int a; a = ;", 1, 2, NULL, f);
+    CHECK(bad.rejected == 1);
+    CHECK(bad.checks == 0);
+    free(capture_close(f));
+}
+
 static void test_fuzzer_catches_a_broken_pass(void) {
     PassInfo broken = { "broken", broken_plus_to_minus };
     FILE *f = capture_open();
@@ -91,6 +117,7 @@ int main(void) {
     test_generator_covers_float_widening();
     test_generator_is_deterministic();
     test_correct_passes_survive_fuzzing();
+    test_trapping_and_nonterminating_programs_are_skipped();
     test_fuzzer_catches_a_broken_pass();
     TEST_END();
 }
