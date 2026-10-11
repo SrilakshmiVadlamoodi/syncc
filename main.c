@@ -9,6 +9,7 @@
 #include "optimizer.h"
 #include "error_engine.h"
 #include "cost.h"
+#include "explain.h"
 #include "interp.h"
 #include "passes.h"
 #include "pipeline.h"
@@ -210,7 +211,15 @@ int main(int argc, char **argv) {
     }
 
     /* TASK11-ANCHOR-B: --learn / --use-cache */
-    /* TASK10-ANCHOR: --explain */
+    if (!collision && opt.explain) {
+        printf("\n=== Explain (%s) ===\n", chosen_label);
+        if (have_sr) {
+            explain_sequence(tac, sr.sequence, sr.sequence_len, NULL, stdout);
+        } else {
+            int fixed[2] = { pass_index("fold"), pass_index("licm") };
+            explain_sequence(tac, fixed, 2, NULL, stdout);
+        }
+    }
 
     if (!collision && opt.stats) {
         printf("\n=== Stats ===\n");
