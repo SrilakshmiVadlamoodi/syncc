@@ -10,6 +10,7 @@
 #include "error_engine.h"
 #include "cost.h"
 #include "explain.h"
+#include "fuzz.h"
 #include "heuristic.h"
 #include "interp.h"
 #include "passes.h"
@@ -125,7 +126,18 @@ int main(int argc, char **argv) {
         free(opt.loo_files);
         return n > 0 ? 0 : 1;
     }
-    /* TASK12-ANCHOR: --fuzz / --gen modes */
+    if (opt.gen_n > 0) {
+        char *src = fuzz_generate_program(opt.seed, opt.gen_n);
+        fputs(src, stdout);
+        free(src);
+        free(opt.loo_files);
+        return 0;
+    }
+    if (opt.fuzz_n > 0) {
+        FuzzStats fs = fuzz_run(opt.fuzz_n, opt.seed, 4, NULL, stdout);
+        free(opt.loo_files);
+        return fs.failures > 0 ? 1 : 0;
+    }
 
     if (!opt.path) {
         usage(argv[0]);
