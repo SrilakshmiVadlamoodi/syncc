@@ -20,6 +20,8 @@ int pass_index(const char *name);   /* -1 if unknown */
 /* Block-scoped passes (a block ends at a label / goto / ifFalse). */
 TACList *pass_copy_propagation(TACList *input);
 TACList *pass_strength_reduction(TACList *input);
+TACList *pass_cse(TACList *input);
+TACList *pass_dce(TACList *input);
 
 /* Applies PASS_REGISTRY[seq[0]], then seq[1], ... Returns a new list; an
  * empty sequence returns a copy of `input`. */

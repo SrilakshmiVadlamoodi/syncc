@@ -23,6 +23,8 @@ static void test_registry(void) {
     CHECK(pass_index("licm") == 1);
     CHECK(pass_index("copyprop") == 2);
     CHECK(pass_index("strength") == 3);
+    CHECK(pass_index("cse") == 4);
+    CHECK(pass_index("dce") == 5);
     CHECK(pass_index("nope") == -1);
     CHECK(PASS_REGISTRY[pass_count()].name == NULL);
 
@@ -72,6 +74,42 @@ static void test_strength(void) {
     expect_pass(pass_strength_reduction, "t1 = 0 - x\n", "t1 = 0 - x\n");
 }
 
+static void test_cse(void) {
+    expect_pass(pass_cse, "t1 = a * b\nt2 = a * b\nx = t1 + t2\n",
+                "t1 = a * b\nt2 = t1\nx = t1 + t2\n");
+    /* commutative operators match with swapped operands */
+    expect_pass(pass_cse, "t1 = a + b\nt2 = b + a\n", "t1 = a + b\nt2 = t1\n");
+    /* non-commutative operators do not */
+    expect_pass(pass_cse, "t1 = a - b\nt2 = b - a\n", "t1 = a - b\nt2 = b - a\n");
+    /* an operand reassigned in between invalidates the expression */
+    expect_pass(pass_cse, "t1 = a * b\na = 1\nt2 = a * b\n", "t1 = a * b\na = 1\nt2 = a * b\n");
+    /* the holder reassigned in between invalidates it too */
+    expect_pass(pass_cse, "t1 = a * b\nt1 = 7\nt2 = a * b\n", "t1 = a * b\nt1 = 7\nt2 = a * b\n");
+    /* state resets at labels */
+    expect_pass(pass_cse, "t1 = a * b\nL1:\nt2 = a * b\n", "t1 = a * b\nL1:\nt2 = a * b\n");
+    /* an instruction overwriting its own operand is not recorded */
+    expect_pass(pass_cse, "a = a + b\nt2 = a + b\n", "a = a + b\nt2 = a + b\n");
+}
+
+static void test_dce(void) {
+    expect_pass(pass_dce, "t1 = a * b\nx = 5\n", "x = 5\n");
+    /* chains are removed to a fixed point */
+    expect_pass(pass_dce, "t1 = a + 1\nt2 = t1 * 2\nx = 5\n", "x = 5\n");
+    /* a temp that is read stays */
+    expect_pass(pass_dce, "t1 = a * b\nx = t1\n", "t1 = a * b\nx = t1\n");
+    /* overwritten store in the same block is removed */
+    expect_pass(pass_dce, "x = 1\nx = 2\n", "x = 2\n");
+    /* ... unless it is read in between */
+    expect_pass(pass_dce, "x = 1\ny = x\nx = 2\n", "x = 1\ny = x\nx = 2\n");
+    /* ... or a label separates them */
+    expect_pass(pass_dce, "x = 1\nL1:\nx = 2\n", "x = 1\nL1:\nx = 2\n");
+    /* x = x + 1 reads x before writing it */
+    expect_pass(pass_dce, "x = 1\nx = x + 1\n", "x = 1\nx = x + 1\n");
+    /* user variables' final values are observable */
+    expect_pass(pass_dce, "x = 5\n", "x = 5\n");
+    expect_pass(pass_dce, "", "");
+}
+
 /* Every registered pass must preserve semantics on every sample and never
  * increase dynamic cost on them. */
 static void check_pass_on_source(const char *path) {
@@ -105,6 +143,8 @@ int main(void) {
     test_registry();
     test_copyprop();
     test_strength();
+    test_cse();
+    test_dce();
     test_property_on_samples();
     TEST_END();
 }
