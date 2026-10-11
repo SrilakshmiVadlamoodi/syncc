@@ -1,3 +1,4 @@
 *.o
 minicc
 minicc.exe
+.superpowers/
